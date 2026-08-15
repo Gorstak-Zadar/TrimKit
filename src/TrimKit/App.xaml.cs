@@ -42,6 +42,8 @@ public partial class App : System.Windows.Application
             var customizationService = new CustomizationService(logService);
             var componentRemovalService = new ComponentRemovalService(logService);
             var winSxsCleanupService = new WinSxsCleanupService(logService);
+            var dialogService = new DialogService();
+            var applyService = new ApplyService(logService, serviceManager, componentRemovalService, customizationService);
 
             var httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("TrimKit/1.0");
@@ -51,13 +53,14 @@ public partial class App : System.Windows.Application
             var msDownloadService = new MicrosoftDownloadService(httpClient, logService);
             var dependencyService = new DependencyService(httpClient, logService);
 
-            var downloadViewModel = new DownloadViewModel(uupDumpService, msDownloadService, logService);
+            var downloadViewModel = new DownloadViewModel(uupDumpService, msDownloadService, logService, dialogService);
             var updateCatalogService = new UpdateCatalogService(httpClient, logService);
             _mainViewModel = new MainViewModel(
                 dismService, registryService, presetService, logService,
                 downloadViewModel, isoService, serviceManager, imageToolsService,
                 unattendService, customizationService,
-                componentRemovalService, winSxsCleanupService, updateCatalogService);
+                componentRemovalService, winSxsCleanupService, updateCatalogService,
+                dialogService, applyService);
 
             _mainWindow = new MainWindow(_mainViewModel);
             _mainWindow.Show();

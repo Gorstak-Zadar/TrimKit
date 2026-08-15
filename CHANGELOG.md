@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0 — 2026-08-16
+
+### Architecture & Code Quality Improvements
+
+- **Shared ProcessRunner utility** — extracted common process execution (DISM, PowerShell) into `ProcessRunner.cs` with concurrent stdout/stderr reading to prevent pipe deadlocks, CancellationToken support with process-kill on cancel
+- **INotifyPropertyChanged on models** — `WindowsPackage`, `WindowsFeature`, `RegistryTweak`, `RemovableComponent`, `WindowsServiceInfo` now use `ObservableObject` + `[ObservableProperty]` so UI checkboxes update correctly on programmatic changes (e.g. preset load)
+- **IDialogService abstraction** — all MessageBox, OpenFileDialog, SaveFileDialog, FolderBrowserDialog calls in ViewModels replaced with an `IDialogService` interface for testability and separation of concerns
+- **Dropped WinForms dependency** — replaced `System.Windows.Forms.FolderBrowserDialog` with `Microsoft.Win32.OpenFolderDialog` (.NET 8+), removed `<UseWindowsForms>` from csproj
+- **CancellationToken support** — `IDismService` methods now accept `CancellationToken`; MainViewModel exposes a Cancel command that kills running DISM processes
+- **ApplyService extraction** — NTLite component map execution, wallpaper application, and preset service changes moved from MainViewModel (~120 lines) into a dedicated `ApplyService`
+- **SafeFireAndForget extension** — replaces `_ = SomeAsync()` pattern with logged exception handling via `TaskExtensions.SafeFireAndForget()`
+- **Fixed empty catch blocks** — added logging to silent catches in MainViewModel; annotated intentional cleanup catches
+- **Fixed hardcoded mount path** — default changed from `C:\TrimKitMount` to `Path.Combine(Path.GetTempPath(), "TrimKitMount")` for portability
+- **Installer build script** — updated to support Inno Setup 7
+
 ## 0.0.6 — 2026-06-15
 
 ### Added

@@ -151,20 +151,7 @@ public class IsoService : IIsoService
 
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "dism.exe",
-                Arguments = $"/English /Get-WimInfo /WimFile:\"{imagePath}\" /Index:1",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using var process = new Process { StartInfo = psi };
-            process.Start();
-            var output = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
+            var output = await ProcessRunner.RunDismAsync($"/Get-WimInfo /WimFile:\"{imagePath}\" /Index:1");
 
             // DISM reports "Recovery" for LZMS-compressed files
             if (output.Contains("Recovery", StringComparison.OrdinalIgnoreCase) &&
@@ -541,20 +528,7 @@ public class IsoService : IIsoService
     {
         // Use DISM to export ESD to WIM
         // First get the number of images (skip index 1 which is usually metadata)
-        var psi = new ProcessStartInfo
-        {
-            FileName = "dism.exe",
-            Arguments = $"/English /Get-WimInfo /WimFile:\"{esdPath}\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var infoProcess = new Process { StartInfo = psi };
-        infoProcess.Start();
-        var infoOutput = await infoProcess.StandardOutput.ReadToEndAsync();
-        await infoProcess.WaitForExitAsync();
+        var infoOutput = await ProcessRunner.RunDismAsync($"/Get-WimInfo /WimFile:\"{esdPath}\"");
 
         // Count indexes (skipping index 1 if it's metadata)
         var indexCount = infoOutput.Split("Index :").Length - 1;
@@ -562,80 +536,25 @@ public class IsoService : IIsoService
 
         for (int i = startIndex; i <= indexCount; i++)
         {
-            var exportPsi = new ProcessStartInfo
+            try
             {
-                FileName = "dism.exe",
-                Arguments = $"/English /Export-Image /SourceImageFile:\"{esdPath}\" /SourceIndex:{i} /DestinationImageFile:\"{wimPath}\" /Compress:Max",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using var exportProcess = new Process { StartInfo = exportPsi };
-            exportProcess.Start();
-            await exportProcess.WaitForExitAsync();
-
-            if (exportProcess.ExitCode != 0)
+                await ProcessRunner.RunDismAsync(
+                    $"/Export-Image /SourceImageFile:\"{esdPath}\" /SourceIndex:{i} /DestinationImageFile:\"{wimPath}\" /Compress:Max");
+            }
+            catch (InvalidOperationException ex)
             {
-                var error = await exportProcess.StandardError.ReadToEndAsync();
-                _logService.Log(LogLevel.Warning, $"ESD index {i} export issue: {error.Trim()}");
+                _logService.Log(LogLevel.Warning, $"ESD index {i} export issue: {ex.Message}");
             }
         }
     }
 
-    private static async Task<string> RunPowerShellAsync(string script)
+    private static async Task<string> RunPowerShellAsync(string script, CancellationToken cancellationToken = default)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -Command \"{script.Replace("\"", "\\\"")}\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = new Process { StartInfo = psi };
-        process.Start();
-
-        var output = await process.StandardOutput.ReadToEndAsync();
-        var error = await process.StandardError.ReadToEndAsync();
-
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0 && !string.IsNullOrWhiteSpace(error))
-        {
-            throw new InvalidOperationException($"PowerShell error: {error.Trim()}");
-        }
-
-        return output;
+        return await ProcessRunner.RunPowerShellAsync(script, cancellationToken);
     }
 
-    private async Task<string> RunDismAsync(string arguments)
+    private async Task<string> RunDismAsync(string arguments, CancellationToken cancellationToken = default)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "dism.exe",
-            Arguments = "/English " + arguments,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = new Process { StartInfo = psi };
-        process.Start();
-        var output = await process.StandardOutput.ReadToEndAsync();
-        var error = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0)
-        {
-            var msg = !string.IsNullOrWhiteSpace(error) ? error : output;
-            throw new InvalidOperationException($"DISM error: {msg.Trim()}");
-        }
-
-        return output;
+        return await ProcessRunner.RunDismAsync(arguments, cancellationToken);
     }
 }

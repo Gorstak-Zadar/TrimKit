@@ -21,6 +21,8 @@ public partial class MainViewModel : ObservableObject
     private readonly IComponentRemovalService _componentRemovalService;
     private readonly IWinSxsCleanupService _winSxsCleanupService;
     private readonly IUpdateCatalogService _updateCatalogService;
+    private readonly IDialogService _dialogService;
+    private readonly IApplyService _applyService;
 
     [ObservableProperty] private string _wimFilePath = string.Empty;
     [ObservableProperty] private string _mountPath = string.Empty;
@@ -37,7 +39,7 @@ public partial class MainViewModel : ObservableObject
         // Lazy-load services when user navigates to Services tab (index 8)
         if (value == 8 && IsMounted && Services.Count == 0)
         {
-            _ = LoadServicesAsync();
+            LoadServicesAsync().SafeFireAndForget(_logService, "Lazy-load services");
         }
     }
 
@@ -55,6 +57,7 @@ public partial class MainViewModel : ObservableObject
     // Preset-loaded customization (wallpapers, service changes from WinReducer)
     private WallpaperPreset? _loadedWallpapers;
     private List<ServicePreset> _loadedServiceChanges = [];
+    private CancellationTokenSource? _cts;
 
     public ObservableCollection<WimImageInfo> WimImages { get; } = [];
     public ObservableCollection<WindowsPackage> Packages { get; } = [];
@@ -89,7 +92,9 @@ public partial class MainViewModel : ObservableObject
         ICustomizationService customizationService,
         IComponentRemovalService componentRemovalService,
         IWinSxsCleanupService winSxsCleanupService,
-        IUpdateCatalogService updateCatalogService)
+        IUpdateCatalogService updateCatalogService,
+        IDialogService dialogService,
+        IApplyService applyService)
     {
         _dismService = dismService;
         _registryService = registryService;
@@ -103,6 +108,8 @@ public partial class MainViewModel : ObservableObject
         _componentRemovalService = componentRemovalService;
         _winSxsCleanupService = winSxsCleanupService;
         _updateCatalogService = updateCatalogService;
+        _dialogService = dialogService;
+        _applyService = applyService;
         DownloadViewModel = downloadViewModel;
 
         _logService.LogAdded += OnLogAdded;
@@ -119,8 +126,8 @@ public partial class MainViewModel : ObservableObject
         foreach (var opt in BootWimSafetyGuard.GetDefaultBootCompatibilityOptions())
             BootCompatibilityOptions.Add(opt);
 
-        // Default mount path
-        MountPath = @"C:\TrimKitMount";
+        // Default mount path — use temp drive instead of assuming C:
+        MountPath = Path.Combine(Path.GetTempPath(), "TrimKitMount");
     }
 
     private void OnLogAdded(OperationLog log)
@@ -133,26 +140,24 @@ public partial class MainViewModel : ObservableObject
     {
         if (IsBusy) return;
 
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Filter = "ISO Files (*.iso)|*.iso|WIM Files (*.wim)|*.wim|ESD Files (*.esd)|*.esd|All Files (*.*)|*.*",
-            Title = "Select Windows Image File"
-        };
+        var filePath = _dialogService.OpenFile(
+            "ISO Files (*.iso)|*.iso|WIM Files (*.wim)|*.wim|ESD Files (*.esd)|*.esd|All Files (*.*)|*.*",
+            "Select Windows Image File");
 
-        if (dialog.ShowDialog() == true)
+        if (filePath != null)
         {
-            var ext = System.IO.Path.GetExtension(dialog.FileName).ToLowerInvariant();
+            var ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
             if (ext == ".iso")
             {
-                await HandleIsoWorkflowAsync(dialog.FileName);
+                await HandleIsoWorkflowAsync(filePath);
             }
             else if (ext == ".esd")
             {
-                await ConvertEsdAndLoadAsync(dialog.FileName);
+                await ConvertEsdAndLoadAsync(filePath);
             }
             else
             {
-                WimFilePath = dialog.FileName;
+                WimFilePath = filePath;
                 await LoadWimInfoAsync();
             }
         }
@@ -174,6 +179,7 @@ public partial class MainViewModel : ObservableObject
         try
         {
             IsBusy = true;
+            _cts = new CancellationTokenSource();
             IsoFilePath = isoPath;
 
             // Step 1: Mount ISO via Explorer (suppress the auto-opened Explorer window)
@@ -251,13 +257,14 @@ public partial class MainViewModel : ObservableObject
         {
             StatusText = $"ISO workflow failed: {ex.Message}";
             _logService.Log(LogLevel.Error, $"ISO workflow failed: {ex.Message}");
-            System.Windows.MessageBox.Show($"ISO workflow failed:\n{ex.Message}", "TrimKit",
-                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            _dialogService.ShowError($"ISO workflow failed:\n{ex.Message}", "TrimKit");
         }
         finally
         {
             IsBusy = false;
             ProgressValue = 0;
+            _cts?.Dispose();
+            _cts = null;
         }
     }
 
@@ -313,15 +320,10 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void BrowseMountPath()
     {
-        var dialog = new System.Windows.Forms.FolderBrowserDialog
+        var folder = _dialogService.OpenFolder("Select Mount Directory");
+        if (folder != null)
         {
-            Description = "Select Mount Directory",
-            UseDescriptionForTitle = true
-        };
-
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            MountPath = dialog.SelectedPath;
+            MountPath = folder;
         }
     }
 
@@ -443,8 +445,7 @@ public partial class MainViewModel : ObservableObject
         if (IsBusy) return;
         if (SelectedImage == null || string.IsNullOrWhiteSpace(WimFilePath))
         {
-            System.Windows.MessageBox.Show("Please select a WIM file and image index.", "TrimKit",
-                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            _dialogService.ShowWarning("Please select a WIM file and image index.", "TrimKit");
             return;
         }
 
@@ -527,8 +528,7 @@ public partial class MainViewModel : ObservableObject
         {
             StatusText = $"Mount failed: {ex.Message}";
             _logService.Log(LogLevel.Error, "Mount failed", ex.Message);
-            System.Windows.MessageBox.Show($"Failed to mount image:\n{ex.Message}", "TrimKit",
-                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            _dialogService.ShowError($"Failed to mount image:\n{ex.Message}", "TrimKit");
         }
         finally
         {
@@ -712,8 +712,7 @@ public partial class MainViewModel : ObservableObject
         if (IsBusy) return;
         if (!IsMounted)
         {
-            System.Windows.MessageBox.Show("No image is mounted.", "TrimKit",
-                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            _dialogService.ShowWarning("No image is mounted.", "TrimKit");
             return;
         }
 
@@ -741,16 +740,16 @@ public partial class MainViewModel : ObservableObject
                           "   • boot.wim uses BootWimSafetyGuard (stricter boot protection)";
         }
 
-        var result = System.Windows.MessageBox.Show(confirmMsg,
-            "Confirm Changes",
-            System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+        var result = _dialogService.Confirm(confirmMsg, "Confirm Changes");
 
-        if (result != System.Windows.MessageBoxResult.Yes)
+        if (!result)
             return;
 
         try
         {
             IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
             var totalOps = Packages.Count(p => p.IsSelected) +
                            Features.Count(f => f.IsModified) +
                            RegistryTweaks.Count(r => r.IsSelected) +
@@ -907,7 +906,6 @@ public partial class MainViewModel : ObservableObject
             }
 
             // Execute NTLite/WinReducer component map removals (file-level, service disable)
-            // This handles preset items that don't map to DISM operations (fonts by NTLite name, languages, drivers, etc.)
             var allPresetRemoveItems = new List<PresetComponent>();
             allPresetRemoveItems.AddRange(ProvisionedApps.Where(c => c.IsSelected && !c.IsProtected).Select(c => new PresetComponent { Id = c.Id, Name = c.DisplayName }));
             allPresetRemoveItems.AddRange(Capabilities.Where(c => c.IsSelected && !c.IsProtected).Select(c => new PresetComponent { Id = c.Id, Name = c.DisplayName }));
@@ -916,148 +914,29 @@ public partial class MainViewModel : ObservableObject
             allPresetRemoveItems.AddRange(Languages.Where(c => c.IsSelected && !c.IsProtected).Select(c => new PresetComponent { Id = c.Id, Name = c.DisplayName }));
             allPresetRemoveItems.AddRange(InboxDrivers.Where(c => c.IsSelected && !c.IsProtected).Select(c => new PresetComponent { Id = c.Id, Name = c.DisplayName }));
 
-            var resolvedPlan = NtLiteComponentMap.ResolvePreset(allPresetRemoveItems, installMountTarget);
-            if (resolvedPlan.TotalActions > 0)
+            if (allPresetRemoveItems.Count > 0)
             {
-                StatusText = $"[install.wim] Executing {resolvedPlan.TotalActions} NTLite-mapped removal(s)...";
-                _logService.Log(LogLevel.Info,
-                    $"NTLite map: {resolvedPlan.FilesToDelete.Count} files, {resolvedPlan.DirectoriesToDelete.Count} dirs, " +
-                    $"{resolvedPlan.ServicesToDisable.Count} services, {resolvedPlan.AppsToRemove.Count} apps, " +
-                    $"{resolvedPlan.LanguagesToRemove.Count} languages, {resolvedPlan.DriversToRemove.Count} drivers");
-
-                // Delete files
-                foreach (var file in resolvedPlan.FilesToDelete)
+                StatusText = "[install.wim] Executing NTLite-mapped removals...";
+                var ntliteProgress = new Progress<(int percent, string status)>(p =>
                 {
-                    try
-                    {
-                        if (File.Exists(file))
-                        {
-                            if (!SafetyGuard.IsSafeToDeleteFromDisk(file))
-                            {
-                                _logService.Log(LogLevel.Warning, $"Preset file deletion blocked (protected): {file}");
-                                continue;
-                            }
-                            File.Delete(file);
-                        }
-                    }
-                    catch { }
-                }
-
-                // Delete directories (supports wildcard patterns like Microsoft.Xbox*)
-                foreach (var dir in resolvedPlan.DirectoriesToDelete)
-                {
-                    try
-                    {
-                        if (dir.Contains('*'))
-                        {
-                            var parent = Path.GetDirectoryName(dir) ?? installMountTarget;
-                            var pattern = Path.GetFileName(dir);
-                            if (Directory.Exists(parent))
-                            {
-                                foreach (var d in Directory.GetDirectories(parent, pattern))
-                                {
-                                    if (!SafetyGuard.IsSafeToDeleteFromDisk(d))
-                                    {
-                                        _logService.Log(LogLevel.Warning, $"Preset directory deletion blocked (protected): {d}");
-                                        continue;
-                                    }
-                                    Directory.Delete(d, true);
-                                }
-                            }
-                        }
-                        else if (Directory.Exists(dir))
-                        {
-                            if (!SafetyGuard.IsSafeToDeleteFromDisk(dir))
-                            {
-                                _logService.Log(LogLevel.Warning, $"Preset directory deletion blocked (protected): {dir}");
-                                continue;
-                            }
-                            Directory.Delete(dir, true);
-                        }
-                    }
-                    catch { }
-                }
-
-                // Disable services
-                foreach (var svc in resolvedPlan.ServicesToDisable)
-                {
-                    try { await _serviceManager.SetServiceStartTypeAsync(installMountTarget, svc, ServiceStartType.Disabled); } catch { }
-                }
-
-                // Remove provisioned apps via DISM
-                foreach (var appId in resolvedPlan.AppsToRemove)
-                {
-                    try { await _componentRemovalService.RemoveProvisionedAppAsync(installMountTarget, appId); } catch { }
-                }
-
-                // Remove languages
-                foreach (var lang in resolvedPlan.LanguagesToRemove)
-                {
-                    try { await _componentRemovalService.RemoveLanguageAsync(installMountTarget, lang); } catch { }
-                }
-
-                _logService.Log(LogLevel.Success, $"NTLite-mapped removals complete ({resolvedPlan.TotalActions} actions)");
+                    ProgressValue = p.percent;
+                    StatusText = $"[install.wim] {p.status}";
+                });
+                await _applyService.ExecuteNtLiteRemovalsAsync(installMountTarget, allPresetRemoveItems, ntliteProgress, ct);
             }
 
             // Apply wallpapers from loaded preset (WinReducer Appearance section)
             if (_loadedWallpapers != null)
             {
                 StatusText = "[install.wim] Applying wallpapers...";
-                try
-                {
-                    if (!string.IsNullOrEmpty(_loadedWallpapers.DesktopWallpaperPath) && File.Exists(_loadedWallpapers.DesktopWallpaperPath))
-                    {
-                        await _customizationService.SetDesktopWallpaperAsync(installMountTarget, _loadedWallpapers.DesktopWallpaperPath);
-                        _logService.Log(LogLevel.Success, $"Desktop wallpaper set: {Path.GetFileName(_loadedWallpapers.DesktopWallpaperPath)}");
-                    }
-                    if (!string.IsNullOrEmpty(_loadedWallpapers.LockScreenPath) && File.Exists(_loadedWallpapers.LockScreenPath))
-                    {
-                        await _customizationService.SetLockScreenWallpaperAsync(installMountTarget, _loadedWallpapers.LockScreenPath);
-                        _logService.Log(LogLevel.Success, $"Lock screen set: {Path.GetFileName(_loadedWallpapers.LockScreenPath)}");
-                    }
-                    if (!string.IsNullOrEmpty(_loadedWallpapers.SetupScreenPath) && File.Exists(_loadedWallpapers.SetupScreenPath))
-                    {
-                        // Setup screen goes into boot.wim
-                        if (IsBootMounted && !string.IsNullOrEmpty(BootWimPath))
-                        {
-                            await _customizationService.SetBootWimWallpaperAsync(BootWimPath, _loadedWallpapers.SetupScreenPath);
-                            _logService.Log(LogLevel.Success, $"Boot/setup wallpaper set: {Path.GetFileName(_loadedWallpapers.SetupScreenPath)}");
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logService.Log(LogLevel.Warning, $"Wallpaper application failed: {ex.Message}");
-                }
+                await _applyService.ApplyWallpapersAsync(installMountTarget, BootWimPath, IsBootMounted, _loadedWallpapers, ct);
             }
 
             // Apply service changes from loaded preset (WinReducer Services section)
             if (_loadedServiceChanges.Count > 0)
             {
                 StatusText = $"[install.wim] Configuring {_loadedServiceChanges.Count} service(s) from preset...";
-                var presetChanges = new List<(string serviceName, ServiceStartType startType)>();
-                foreach (var svc in _loadedServiceChanges)
-                {
-                    var startType = svc.StartType switch
-                    {
-                        2 => ServiceStartType.Automatic,
-                        3 => ServiceStartType.Manual,
-                        4 => ServiceStartType.Disabled,
-                        5 => ServiceStartType.Remove,
-                        _ => ServiceStartType.Disabled
-                    };
-                    presetChanges.Add((svc.ServiceName, startType));
-                }
-
-                try
-                {
-                    await _serviceManager.ConfigureServicesAsync(installMountTarget, presetChanges);
-                }
-                catch (Exception ex)
-                {
-                    _logService.Log(LogLevel.Warning, $"Preset service configuration failed: {ex.Message}");
-                }
-                _logService.Log(LogLevel.Success, $"Applied {_loadedServiceChanges.Count} service change(s) from preset");
+                await _applyService.ApplyPresetServiceChangesAsync(installMountTarget, _loadedServiceChanges, ct);
             }
 
             // DISM image cleanup (shrinks WIM after component removal)
@@ -1225,16 +1104,12 @@ public partial class MainViewModel : ObservableObject
                 }
 
                 // Ask user where to save the final ISO
-                var saveDialog = new Microsoft.Win32.SaveFileDialog
-                {
-                    Title = "Save debloated ISO as",
-                    Filter = "ISO Image (*.iso)|*.iso",
-                    FileName = !string.IsNullOrEmpty(IsoFilePath)
-                        ? Path.GetFileNameWithoutExtension(IsoFilePath) + "_trimmed.iso"
-                        : "Windows_Trimmed.iso"
-                };
+                var defaultIsoName = !string.IsNullOrEmpty(IsoFilePath)
+                    ? Path.GetFileNameWithoutExtension(IsoFilePath) + "_trimmed.iso"
+                    : "Windows_Trimmed.iso";
+                var isoSavePath = _dialogService.SaveFile("ISO Image (*.iso)|*.iso", "Save debloated ISO as", defaultIsoName);
 
-                if (saveDialog.ShowDialog() == true)
+                if (isoSavePath != null)
                 {
                     StatusText = "Building ISO...";
                     var isoProgress = new Progress<(int percent, string status)>(p =>
@@ -1244,10 +1119,10 @@ public partial class MainViewModel : ObservableObject
                     });
 
                     var volumeLabel = "WIN_TRIMKIT";
-                    await _imageToolsService.BuildIsoAsync(WorkFolder, saveDialog.FileName, volumeLabel, isoProgress);
+                    await _imageToolsService.BuildIsoAsync(WorkFolder, isoSavePath, volumeLabel, isoProgress);
 
-                    StatusText = $"ISO saved: {saveDialog.FileName}";
-                    _logService.Log(LogLevel.Success, $"Final ISO created: {saveDialog.FileName}");
+                    StatusText = $"ISO saved: {isoSavePath}";
+                    _logService.Log(LogLevel.Success, $"Final ISO created: {isoSavePath}");
                 }
                 else
                 {
@@ -1276,12 +1151,18 @@ public partial class MainViewModel : ObservableObject
             // Unmount ISO if still mounted
             if (!string.IsNullOrEmpty(IsoFilePath))
             {
-                try { await _isoService.UnmountIsoAsync(IsoFilePath); } catch { }
+                try { await _isoService.UnmountIsoAsync(IsoFilePath); }
+                catch (Exception ex) { _logService.Log(LogLevel.Warning, $"ISO unmount during cleanup: {ex.Message}"); }
             }
 
             Packages.Clear();
             Features.Clear();
             StatusText = "Done — ISO built and cleanup complete";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Operation cancelled";
+            _logService.Log(LogLevel.Warning, "Apply operation was cancelled by user");
         }
         catch (Exception ex)
         {
@@ -1292,6 +1173,8 @@ public partial class MainViewModel : ObservableObject
         {
             IsBusy = false;
             ProgressValue = 0;
+            _cts?.Dispose();
+            _cts = null;
         }
     }
 
@@ -1344,16 +1227,10 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void AddDriverPath()
     {
-        var dialog = new System.Windows.Forms.FolderBrowserDialog
+        var folder = _dialogService.OpenFolder("Select Driver Folder");
+        if (folder != null && !DriverPaths.Contains(folder))
         {
-            Description = "Select Driver Folder",
-            UseDescriptionForTitle = true
-        };
-
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            if (!DriverPaths.Contains(dialog.SelectedPath))
-                DriverPaths.Add(dialog.SelectedPath);
+            DriverPaths.Add(folder);
         }
     }
 
@@ -1366,13 +1243,9 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task SavePresetAsync()
     {
-        var dialog = new Microsoft.Win32.SaveFileDialog
-        {
-            Filter = "TrimKit Preset (*.wwp)|*.wwp",
-            Title = "Save TrimKit Preset"
-        };
+        var savePath = _dialogService.SaveFile("TrimKit Preset (*.wwp)|*.wwp", "Save TrimKit Preset");
 
-        if (dialog.ShowDialog() != true)
+        if (savePath == null)
             return;
 
         // Collect ALL selected items from ALL tabs into the RemoveList
@@ -1417,7 +1290,7 @@ public partial class MainViewModel : ObservableObject
 
         var preset = new Preset
         {
-            Name = Path.GetFileNameWithoutExtension(dialog.FileName),
+            Name = Path.GetFileNameWithoutExtension(savePath),
             SourceFormat = "TrimKit",
             RemoveList = removeList,
             KeepList = keepList,
@@ -1430,7 +1303,7 @@ public partial class MainViewModel : ObservableObject
             DriverPaths = DriverPaths.ToList()
         };
 
-        await _presetService.SavePresetAsync(preset, dialog.FileName);
+        await _presetService.SavePresetAsync(preset, savePath);
         _logService.Log(LogLevel.Success, $"Preset saved: {preset.Name} (Remove: {preset.RemoveList.Count}, Keep: {preset.KeepList.Count})");
         StatusText = $"Preset saved: {preset.Name}";
     }
@@ -1438,18 +1311,16 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task LoadPresetAsync()
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Filter = "All Supported Presets|*.wwp;*.xml;*.wccf|TrimKit Preset (*.wwp)|*.wwp|NTLite Preset (*.xml)|*.xml|WinReducer Preset (*.wccf)|*.wccf|All Files (*.*)|*.*",
-            Title = "Load Preset (TrimKit / NTLite / WinReducer)"
-        };
+        var filePath = _dialogService.OpenFile(
+            "All Supported Presets|*.wwp;*.xml;*.wccf|TrimKit Preset (*.wwp)|*.wwp|NTLite Preset (*.xml)|*.xml|WinReducer Preset (*.wccf)|*.wccf|All Files (*.*)|*.*",
+            "Load Preset (TrimKit / NTLite / WinReducer)");
 
-        if (dialog.ShowDialog() != true)
+        if (filePath == null)
             return;
 
         try
         {
-            var preset = await _presetService.LoadPresetAsync(dialog.FileName);
+            var preset = await _presetService.LoadPresetAsync(filePath);
             ApplyPresetToUI(preset);
 
             _logService.Log(LogLevel.Success,
@@ -1459,22 +1330,18 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             _logService.Log(LogLevel.Error, $"Failed to load preset: {ex.Message}");
-            System.Windows.MessageBox.Show($"Failed to load preset:\n{ex.Message}", "TrimKit",
-                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            _dialogService.ShowError($"Failed to load preset:\n{ex.Message}", "TrimKit");
         }
     }
 
     [RelayCommand]
     private async Task CombinePresetsAsync()
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Filter = "All Supported Presets|*.wwp;*.xml;*.wccf|All Files (*.*)|*.*",
-            Title = "Select Presets to Combine (hold Ctrl for multiple)",
-            Multiselect = true
-        };
+        var files = _dialogService.OpenFiles(
+            "All Supported Presets|*.wwp;*.xml;*.wccf|All Files (*.*)|*.*",
+            "Select Presets to Combine (hold Ctrl for multiple)");
 
-        if (dialog.ShowDialog() != true || dialog.FileNames.Length < 2)
+        if (files == null || files.Length < 2)
         {
             StatusText = "Select at least 2 presets to combine";
             return;
@@ -1483,7 +1350,7 @@ public partial class MainViewModel : ObservableObject
         try
         {
             var presets = new List<Preset>();
-            foreach (var file in dialog.FileNames)
+            foreach (var file in files)
             {
                 var preset = await _presetService.LoadPresetAsync(file);
                 presets.Add(preset);
@@ -1493,16 +1360,14 @@ public partial class MainViewModel : ObservableObject
             var combined = _presetService.CombinePresets(presets, combinedName);
 
             // Save the combined preset
-            var saveDialog = new Microsoft.Win32.SaveFileDialog
-            {
-                Filter = "TrimKit Preset (*.wwp)|*.wwp",
-                Title = "Save Combined Preset",
-                FileName = $"{combinedName}.wwp"
-            };
+            var combinedSavePath = _dialogService.SaveFile(
+                "TrimKit Preset (*.wwp)|*.wwp",
+                "Save Combined Preset",
+                $"{combinedName}.wwp");
 
-            if (saveDialog.ShowDialog() == true)
+            if (combinedSavePath != null)
             {
-                await _presetService.SavePresetAsync(combined, saveDialog.FileName);
+                await _presetService.SavePresetAsync(combined, combinedSavePath);
                 _logService.Log(LogLevel.Success,
                     $"Combined {presets.Count} presets → {combined.Name} (Remove: {combined.RemoveList.Count}, Keep: {combined.KeepList.Count})");
 
@@ -1665,6 +1530,17 @@ public partial class MainViewModel : ObservableObject
     {
         LogEntries.Clear();
         _logService.Clear();
+    }
+
+    [RelayCommand]
+    private void CancelOperation()
+    {
+        if (_cts != null && !_cts.IsCancellationRequested)
+        {
+            _cts.Cancel();
+            _logService.Log(LogLevel.Warning, "Operation cancelled by user");
+            StatusText = "Cancelling...";
+        }
     }
 
     /// <summary>
@@ -1845,21 +1721,19 @@ public partial class MainViewModel : ObservableObject
                             break;
                         }
 
-                        var result = System.Windows.MessageBox.Show(
+                        var result = _dialogService.ConfirmWithCancel(
                             $"Failed to save and unmount boot.wim:\n\n{ex.Message}\n\n" +
                             "The directory might be locked by Windows Explorer, an open file, or antivirus.\n\n" +
                             "• Click Yes to RETRY unmounting and saving changes.\n" +
                             "• Click No to DISCARD changes and unmount.\n" +
                             "• Click Cancel to KEEP the image mounted so you can resolve the lock manually.",
-                            "TrimKit - Unmount Error (boot.wim)",
-                            System.Windows.MessageBoxButton.YesNoCancel,
-                            System.Windows.MessageBoxImage.Warning);
+                            "TrimKit - Unmount Error (boot.wim)");
 
-                        if (result == System.Windows.MessageBoxResult.Yes)
+                        if (result == true)
                         {
                             continue;
                         }
-                        else if (result == System.Windows.MessageBoxResult.No)
+                        else if (result == false)
                         {
                             try { await _dismService.UnmountImageAsync(BootMountPath, false); } catch { }
                             IsBootMounted = false;
@@ -1899,21 +1773,19 @@ public partial class MainViewModel : ObservableObject
                             break;
                         }
 
-                        var result = System.Windows.MessageBox.Show(
+                        var result = _dialogService.ConfirmWithCancel(
                             $"Failed to save and unmount install.wim:\n\n{ex.Message}\n\n" +
                             "The directory might be locked by Windows Explorer, an open file, or antivirus.\n\n" +
                             "• Click Yes to RETRY unmounting and saving changes.\n" +
                             "• Click No to DISCARD changes and unmount.\n" +
                             "• Click Cancel to KEEP the image mounted so you can resolve the lock manually.",
-                            "TrimKit - Unmount Error (install.wim)",
-                            System.Windows.MessageBoxButton.YesNoCancel,
-                            System.Windows.MessageBoxImage.Warning);
+                            "TrimKit - Unmount Error (install.wim)");
 
-                        if (result == System.Windows.MessageBoxResult.Yes)
+                        if (result == true)
                         {
                             continue;
                         }
-                        else if (result == System.Windows.MessageBoxResult.No)
+                        else if (result == false)
                         {
                             try { await _dismService.UnmountImageAsync(installMount, false); } catch { }
                             IsInstallMounted = false;
@@ -1944,7 +1816,7 @@ public partial class MainViewModel : ObservableObject
             {
                 await _dismService.CleanupMountsAsync();
             }
-            catch { }
+            catch (Exception ex) { _logService.Log(LogLevel.Warning, $"DISM cleanup: {ex.Message}"); }
 
             // Delete temp work folder
             if (!string.IsNullOrEmpty(WorkFolder) && Directory.Exists(WorkFolder))

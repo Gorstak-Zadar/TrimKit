@@ -68,6 +68,8 @@ Write-Host "Publish complete." -ForegroundColor Green
 # 3. Locate Inno Setup Compiler (ISCC.exe)
 Write-Host "Locating Inno Setup compiler..." -ForegroundColor Yellow
 $DefaultIsccPaths = @(
+    "C:\Program Files\Inno Setup 7\ISCC.exe",
+    "C:\Program Files (x86)\Inno Setup 7\ISCC.exe",
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     "C:\Program Files\Inno Setup 6\ISCC.exe"
 )

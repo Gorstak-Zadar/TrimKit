@@ -12,6 +12,7 @@ public partial class DownloadViewModel : ObservableObject
     private readonly IUupDumpService _uupDumpService;
     private readonly IMicrosoftDownloadService _msDownloadService;
     private readonly ILogService _logService;
+    private readonly IDialogService _dialogService;
 
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusText = "Select a source and search for builds";
@@ -34,16 +35,17 @@ public partial class DownloadViewModel : ObservableObject
 
     private CancellationTokenSource? _cts;
 
-    public DownloadViewModel(IUupDumpService uupDumpService, IMicrosoftDownloadService msDownloadService, ILogService logService)
+    public DownloadViewModel(IUupDumpService uupDumpService, IMicrosoftDownloadService msDownloadService, ILogService logService, IDialogService dialogService)
     {
         _uupDumpService = uupDumpService;
         _msDownloadService = msDownloadService;
         _logService = logService;
+        _dialogService = dialogService;
 
         OutputDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "TrimKit", "Downloads");
 
         // Load MS products
-        _ = LoadMsProductsAsync();
+        LoadMsProductsAsync().SafeFireAndForget(_logService, "Load MS products");
     }
 
     private async Task LoadMsProductsAsync()
@@ -149,14 +151,9 @@ public partial class DownloadViewModel : ObservableObject
     private async Task DownloadDirectAsync()
     {
         // Ask user where to save
-        var saveDialog = new Microsoft.Win32.SaveFileDialog
-        {
-            Title = "Save Official Windows ISO as",
-            Filter = "ISO Image (*.iso)|*.iso",
-            FileName = "Windows_Latest.iso"
-        };
+        var savePath = _dialogService.SaveFile("ISO Image (*.iso)|*.iso", "Save Official Windows ISO as", "Windows_Latest.iso");
 
-        if (saveDialog.ShowDialog() != true)
+        if (savePath == null)
             return;
 
         try
@@ -176,11 +173,11 @@ public partial class DownloadViewModel : ObservableObject
 
             await _msDownloadService.DownloadIsoAsync(
                 lang,
-                saveDialog.FileName,
+                savePath,
                 progress,
                 _cts.Token);
 
-            StatusText = $"ISO downloaded: {saveDialog.FileName}";
+            StatusText = $"ISO downloaded: {savePath}";
         }
         catch (OperationCanceledException)
         {
@@ -317,16 +314,10 @@ public partial class DownloadViewModel : ObservableObject
     [RelayCommand]
     private void BrowseOutputDirectory()
     {
-        var dialog = new System.Windows.Forms.FolderBrowserDialog
+        var folder = _dialogService.OpenFolder("Select Download Output Directory", OutputDirectory);
+        if (folder != null)
         {
-            Description = "Select Download Output Directory",
-            UseDescriptionForTitle = true,
-            SelectedPath = OutputDirectory
-        };
-
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            OutputDirectory = dialog.SelectedPath;
+            OutputDirectory = folder;
         }
     }
 

@@ -79,7 +79,7 @@ public static partial class NtLiteComponentMap
                             foreach (var f in Directory.GetFiles(fontsDir, pattern))
                                 plan.FilesToDelete.Add(f);
                         }
-                        catch { }
+                        catch { /* Directory may not exist or be inaccessible */ }
                     }
                 }
                 continue;

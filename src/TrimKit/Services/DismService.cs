@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 using TrimKit.Models;
@@ -14,10 +13,10 @@ public partial class DismService : IDismService
         _logService = logService;
     }
 
-    public async Task<List<WimImageInfo>> GetWimInfoAsync(string wimPath)
+    public async Task<List<WimImageInfo>> GetWimInfoAsync(string wimPath, CancellationToken cancellationToken = default)
     {
         var images = new List<WimImageInfo>();
-        var output = await RunDismAsync($"/Get-WimInfo /WimFile:\"{wimPath}\"");
+        var output = await RunDismAsync($"/Get-WimInfo /WimFile:\"{wimPath}\"", cancellationToken);
 
         var indexBlocks = output.Split("Index : ", StringSplitOptions.RemoveEmptyEntries);
 
@@ -53,35 +52,35 @@ public partial class DismService : IDismService
         return images;
     }
 
-    public async Task MountImageAsync(string wimPath, int imageIndex, string mountPath, IProgress<int>? progress = null)
+    public async Task MountImageAsync(string wimPath, int imageIndex, string mountPath, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(mountPath);
 
         _logService.Log(LogLevel.Info, $"Mounting image index {imageIndex} to {mountPath}...");
         progress?.Report(10);
 
-        await RunDismAsync($"/Mount-Wim /WimFile:\"{wimPath}\" /Index:{imageIndex} /MountDir:\"{mountPath}\"");
+        await RunDismAsync($"/Mount-Wim /WimFile:\"{wimPath}\" /Index:{imageIndex} /MountDir:\"{mountPath}\"", cancellationToken);
 
         progress?.Report(100);
         _logService.Log(LogLevel.Success, "Image mounted successfully");
     }
 
-    public async Task UnmountImageAsync(string mountPath, bool commitChanges, IProgress<int>? progress = null)
+    public async Task UnmountImageAsync(string mountPath, bool commitChanges, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
     {
         var commitFlag = commitChanges ? "/Commit" : "/Discard";
         _logService.Log(LogLevel.Info, $"Unmounting image ({(commitChanges ? "saving changes" : "discarding changes")})...");
         progress?.Report(10);
 
-        await RunDismAsync($"/Unmount-Wim /MountDir:\"{mountPath}\" {commitFlag}");
+        await RunDismAsync($"/Unmount-Wim /MountDir:\"{mountPath}\" {commitFlag}", cancellationToken);
 
         progress?.Report(100);
         _logService.Log(LogLevel.Success, "Image unmounted successfully");
     }
 
-    public async Task<List<WindowsPackage>> GetPackagesAsync(string mountPath)
+    public async Task<List<WindowsPackage>> GetPackagesAsync(string mountPath, CancellationToken cancellationToken = default)
     {
         var packages = new List<WindowsPackage>();
-        var output = await RunDismAsync($"/Image:\"{mountPath}\" /Get-Packages");
+        var output = await RunDismAsync($"/Image:\"{mountPath}\" /Get-Packages", cancellationToken);
 
         var lines = output.Split('\n');
         WindowsPackage? current = null;
@@ -121,17 +120,17 @@ public partial class DismService : IDismService
         return packages;
     }
 
-    public async Task RemovePackageAsync(string mountPath, string packageName)
+    public async Task RemovePackageAsync(string mountPath, string packageName, CancellationToken cancellationToken = default)
     {
         _logService.Log(LogLevel.Info, $"Removing package: {SimplifyPackageName(packageName)}");
-        await RunDismAsync($"/Image:\"{mountPath}\" /Remove-Package /PackageName:\"{packageName}\"");
+        await RunDismAsync($"/Image:\"{mountPath}\" /Remove-Package /PackageName:\"{packageName}\"", cancellationToken);
         _logService.Log(LogLevel.Success, $"Removed: {SimplifyPackageName(packageName)}");
     }
 
-    public async Task<List<WindowsFeature>> GetFeaturesAsync(string mountPath)
+    public async Task<List<WindowsFeature>> GetFeaturesAsync(string mountPath, CancellationToken cancellationToken = default)
     {
         var features = new List<WindowsFeature>();
-        var output = await RunDismAsync($"/Image:\"{mountPath}\" /Get-Features");
+        var output = await RunDismAsync($"/Image:\"{mountPath}\" /Get-Features", cancellationToken);
 
         var lines = output.Split('\n');
         WindowsFeature? current = null;
@@ -162,34 +161,34 @@ public partial class DismService : IDismService
         return features;
     }
 
-    public async Task EnableFeatureAsync(string mountPath, string featureName)
+    public async Task EnableFeatureAsync(string mountPath, string featureName, CancellationToken cancellationToken = default)
     {
         _logService.Log(LogLevel.Info, $"Enabling feature: {featureName}");
-        await RunDismAsync($"/Image:\"{mountPath}\" /Enable-Feature /FeatureName:\"{featureName}\"");
+        await RunDismAsync($"/Image:\"{mountPath}\" /Enable-Feature /FeatureName:\"{featureName}\"", cancellationToken);
         _logService.Log(LogLevel.Success, $"Enabled: {featureName}");
     }
 
-    public async Task DisableFeatureAsync(string mountPath, string featureName)
+    public async Task DisableFeatureAsync(string mountPath, string featureName, CancellationToken cancellationToken = default)
     {
         _logService.Log(LogLevel.Info, $"Disabling feature: {featureName}");
-        await RunDismAsync($"/Image:\"{mountPath}\" /Disable-Feature /FeatureName:\"{featureName}\"");
+        await RunDismAsync($"/Image:\"{mountPath}\" /Disable-Feature /FeatureName:\"{featureName}\"", cancellationToken);
         _logService.Log(LogLevel.Success, $"Disabled: {featureName}");
     }
 
-    public async Task AddDriverAsync(string mountPath, string driverPath, bool recurse = true, bool forceUnsigned = false)
+    public async Task AddDriverAsync(string mountPath, string driverPath, bool recurse = true, bool forceUnsigned = false, CancellationToken cancellationToken = default)
     {
         var recurseFlag = recurse ? "/Recurse" : "";
         var unsignedFlag = forceUnsigned ? "/ForceUnsigned" : "";
         _logService.Log(LogLevel.Info, $"Adding driver(s) from: {driverPath}{(forceUnsigned ? " (forcing unsigned)" : "")}");
-        await RunDismAsync($"/Image:\"{mountPath}\" /Add-Driver /Driver:\"{driverPath}\" {recurseFlag} {unsignedFlag}");
+        await RunDismAsync($"/Image:\"{mountPath}\" /Add-Driver /Driver:\"{driverPath}\" {recurseFlag} {unsignedFlag}", cancellationToken);
         _logService.Log(LogLevel.Success, "Driver(s) added successfully");
     }
 
-    public async Task<string> GetMountedImageStatus(string mountPath)
+    public async Task<string> GetMountedImageStatus(string mountPath, CancellationToken cancellationToken = default)
     {
         try
         {
-            var output = await RunDismAsync("/Get-MountedWimInfo");
+            var output = await RunDismAsync("/Get-MountedWimInfo", cancellationToken);
             return output.Contains(mountPath, StringComparison.OrdinalIgnoreCase)
                 ? "Mounted"
                 : "Not Mounted";
@@ -200,41 +199,24 @@ public partial class DismService : IDismService
         }
     }
 
-    public async Task CleanupMountsAsync()
+    public async Task CleanupMountsAsync(CancellationToken cancellationToken = default)
     {
         _logService.Log(LogLevel.Info, "Cleaning up abandoned mounts...");
-        await RunDismAsync("/Cleanup-Wim");
+        await RunDismAsync("/Cleanup-Wim", cancellationToken);
         _logService.Log(LogLevel.Success, "Cleanup complete");
     }
 
-    private async Task<string> RunDismAsync(string arguments)
+    private async Task<string> RunDismAsync(string arguments, CancellationToken cancellationToken = default)
     {
-        var psi = new ProcessStartInfo
+        try
         {
-            FileName = "dism.exe",
-            Arguments = "/English " + arguments,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = new Process { StartInfo = psi };
-        process.Start();
-
-        var output = await process.StandardOutput.ReadToEndAsync();
-        var error = await process.StandardError.ReadToEndAsync();
-
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0)
-        {
-            var errorMsg = !string.IsNullOrWhiteSpace(error) ? error : output;
-            _logService.Log(LogLevel.Error, $"DISM error: {errorMsg.Trim()}");
-            throw new InvalidOperationException($"DISM failed (exit code {process.ExitCode}): {errorMsg.Trim()}");
+            return await ProcessRunner.RunDismAsync(arguments, cancellationToken);
         }
-
-        return output;
+        catch (InvalidOperationException ex)
+        {
+            _logService.Log(LogLevel.Error, $"DISM error: {ex.Message}");
+            throw;
+        }
     }
 
     private static string ExtractField(string block, string fieldName)

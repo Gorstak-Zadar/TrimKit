@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 using TrimKit.Models;
@@ -534,28 +533,9 @@ public partial class ComponentRemovalService : IComponentRemovalService
                lower.Contains("marlett");
     }
 
-    private async Task<string> RunDismAsync(string arguments)
+    private async Task<string> RunDismAsync(string arguments, CancellationToken cancellationToken = default)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "dism.exe",
-            Arguments = "/English " + arguments,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = new Process { StartInfo = psi };
-        process.Start();
-        var output = await process.StandardOutput.ReadToEndAsync();
-        var error = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException((!string.IsNullOrWhiteSpace(error) ? error : output).Trim());
-
-        return output;
+        return await ProcessRunner.RunDismAsync(arguments, cancellationToken);
     }
 
     [GeneratedRegex(@"\.(\w+?)_")]

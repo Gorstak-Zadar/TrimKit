@@ -1,3 +1,5 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+
 namespace TrimKit.Services;
 
 /// <summary>
@@ -42,16 +44,17 @@ public interface IComponentRemovalService
     Task RemoveAllAsync(string mountPath, List<RemovableComponent> components, IProgress<(int percent, string status)>? progress = null);
 }
 
-public class RemovableComponent
+public partial class RemovableComponent : ObservableObject
 {
     public string Id { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public ComponentType Type { get; set; }
     public long Size { get; set; }
-    public bool IsSelected { get; set; }
     public bool IsProtected { get; set; } // Flagged as risky to remove
     public string? Description { get; set; }
+
+    [ObservableProperty] private bool _isSelected;
 
     public string SizeDisplay => Size > 0 ? $"{Size / (1024.0 * 1024.0):F1} MB" : "";
 }

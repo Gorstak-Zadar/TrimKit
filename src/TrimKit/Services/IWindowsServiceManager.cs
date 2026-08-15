@@ -1,3 +1,4 @@
+using CommunityToolkit.Mvvm.ComponentModel;
 using TrimKit.Models;
 
 namespace TrimKit.Services;
@@ -14,16 +15,24 @@ public interface IWindowsServiceManager
     Task ConfigureServicesAsync(string mountPath, List<(string serviceName, ServiceStartType startType)> changes);
 }
 
-public class WindowsServiceInfo
+public partial class WindowsServiceInfo : ObservableObject
 {
     public string ServiceName { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
-    public ServiceStartType StartType { get; set; }
-    public ServiceStartType OriginalStartType { get; set; }
-    public bool IsSelected { get; set; }
     public bool IsProtected { get; set; }
     public bool IsReadOnly { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsModified))]
+    private ServiceStartType _startType;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsModified))]
+    private ServiceStartType _originalStartType;
+
+    [ObservableProperty] private bool _isSelected;
+
     public bool IsModified => StartType != OriginalStartType;
 }
 
